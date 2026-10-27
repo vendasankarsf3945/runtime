@@ -56,7 +56,6 @@ export type EmscriptenModuleInternal = EmscriptenModule & {
 
 export interface AssetEntryInternal extends AssetEntry {
     cache?: RequestCache
-    cacheReloadAttempted?: boolean
     useCredentials?: boolean
     culture?: string
     priority?: boolean

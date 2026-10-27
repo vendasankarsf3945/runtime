@@ -56,6 +56,10 @@ app.Use(async (context, next) =>
                 context.Response.ContentLength = 1;
                 await context.Response.Body.WriteAsync(new byte[] { 0 });
                 break;
+            case "not-found":
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                context.Response.ContentLength = 0;
+                break;
             default:
                 throw new InvalidOperationException($"Unknown client assembly failure mode '{clientAssemblyFailureMode}'.");
         }

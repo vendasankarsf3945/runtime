@@ -436,9 +436,6 @@ export async function start_asset_download (asset: AssetEntryInternal): Promise<
             // we will not re-try if disabled
             throw err;
         }
-        if (asset.cacheReloadAttempted) {
-            throw err;
-        }
         if (ENVIRONMENT_IS_SHELL || ENVIRONMENT_IS_NODE) {
             // we will not re-try on shell
             throw err;
@@ -555,9 +552,6 @@ async function start_asset_download_sources (asset: AssetEntryInternal): Promise
             asset.pendingDownloadInternal = loadingResource;
             response = await loadingResource.response;
             if (!response || !response.ok) {
-                if (asset.cacheReloadAttempted) {
-                    break;
-                }
                 continue;// next source
             }
             return response;
@@ -569,9 +563,6 @@ async function start_asset_download_sources (asset: AssetEntryInternal): Promise
                     status: 0,
                     statusText: "" + err,
                 } as any;
-            }
-            if (asset.cacheReloadAttempted) {
-                break;
             }
             continue; //next source
         }
@@ -659,7 +650,7 @@ function download_resource (asset: AssetEntryInternal): LoadingResource {
     }
 }
 
-function fetchResource (asset: AssetEntryInternal): Promise<Response> {
+async function fetchResource (asset: AssetEntryInternal): Promise<Response> {
     // Allow developers to override how the resource is loaded
     let url = asset.resolvedUrl!;
     if (loaderHelpers.loadBootResource) {
@@ -694,27 +685,23 @@ function fetchResource (asset: AssetEntryInternal): Promise<Response> {
         }
     }
 
-    return fetchResourceWithCacheRecovery(asset, url, fetchOptions);
-}
+    const shouldAttemptCacheRecovery = fetchOptions.cache === "force-cache" &&
+        loaderHelpers.enableDownloadRetry &&
+        !asset.isOptional;
 
-async function fetchResourceWithCacheRecovery (asset: AssetEntryInternal, url: string, fetchOptions: RequestInit): Promise<Response> {
     try {
         const response = await loaderHelpers.fetch_like(url, fetchOptions);
-        if (fetchOptions.cache !== "force-cache" ||
-            asset.cacheReloadAttempted ||
-            (response.ok && response.headers.get("Content-Length") !== "0")) {
-            return response;
+        if (shouldAttemptCacheRecovery &&
+            (!response.ok || response.headers.get("Content-Length") === "0")) {
+            throw new Error(`Cached response for '${asset.name}' is not usable`);
         }
+        return response;
     } catch (err) {
-        if (fetchOptions.cache !== "force-cache" || asset.cacheReloadAttempted) {
-            throw err;
+        if (shouldAttemptCacheRecovery) {
+            asset.cache = "reload";
         }
+        throw err;
     }
-
-    mono_log_debug(() => `Retrying download '${asset.name}' with cache reload`);
-    asset.cacheReloadAttempted = true;
-    fetchOptions.cache = "reload";
-    return loaderHelpers.fetch_like(url, fetchOptions);
 }
 
 const monoToBlazorAssetTypeMap: { [key: string]: WebAssemblyBootResourceType | undefined } = {

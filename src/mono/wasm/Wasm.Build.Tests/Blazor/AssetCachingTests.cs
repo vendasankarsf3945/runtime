@@ -6,7 +6,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.Playwright;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -24,14 +23,16 @@ public class AssetCachingTests : BlazorWasmTestBase
     {
     }
 
-    [Fact, TestCategory("no-workload")]
-    public async Task BlazorApp_RecoversFromCachedEmptyFingerprintAsset()
+    [Theory, TestCategory("no-workload")]
+    [InlineData("empty", 200)]
+    [InlineData("not-found", 404)]
+    public async Task BlazorApp_RecoversFromInvalidCachedFingerprintAsset(string failureMode, int expectedStatusCode)
     {
         var project = CopyTestAsset(
             Configuration.Release,
             aot: false,
             TestAsset.BlazorWebWasm,
-            "CachedEmptyFingerprintAssetTest",
+            $"InvalidCachedFingerprintAssetTest_{failureMode}",
             appendUnicodeToPath: false
         );
 
@@ -76,7 +77,8 @@ public class AssetCachingTests : BlazorWasmTestBase
                     .ToArray();
 
                 Assert.Equal(2, clientAssemblyRequests.Length);
-                Assert.All(clientAssemblyRequests, log => Assert.Equal(200, log.StatusCode));
+                Assert.Equal(expectedStatusCode, clientAssemblyRequests[0].StatusCode);
+                Assert.Equal(200, clientAssemblyRequests[1].StatusCode);
                 Assert.True(clientAssemblyRequests[0].WasFailureInjected);
                 Assert.False(clientAssemblyRequests[1].WasFailureInjected);
 
@@ -95,7 +97,8 @@ public class AssetCachingTests : BlazorWasmTestBase
         var publishedAppDllFileName = $"{project.ProjectName}.dll";
         using ToolCommand cmd = new DotNetCommand(s_buildEnv, _testOutput)
             .WithWorkingDirectory(publishedAppPath)
-            .WithEnvironmentVariable(InjectClientAssemblyFailureEnvironmentVariable, "true");
+            .WithEnvironmentVariable(InjectClientAssemblyFailureEnvironmentVariable, "true")
+            .WithEnvironmentVariable(ClientAssemblyFailureModeEnvironmentVariable, failureMode);
         await BrowserRun(cmd, $"exec {publishedAppDllFileName}", runOptions);
     }
 
@@ -103,20 +106,20 @@ public class AssetCachingTests : BlazorWasmTestBase
     [InlineData("empty", 200)]
     [InlineData("error", 503)]
     [InlineData("integrity", 200)]
-    public Task BlazorApp_DoesNotRetryAfterFailedCacheRecovery(string failureMode, int expectedStatusCode)
+    public Task BlazorApp_UsesExistingRetryLimitForCacheRecovery(string failureMode, int expectedStatusCode)
         => RunFailedCacheRecoveryTest(
             fingerprintAssets: true,
             failureMode: failureMode,
             expectedStatusCode: expectedStatusCode,
-            expectedRequestCount: 2);
+            expectedRequestCount: 3);
 
     [Fact, TestCategory("no-workload")]
-    public Task BlazorApp_DoesNotUseCacheRecoveryForNonForceCache()
+    public Task BlazorApp_PreservesExistingRetryBehaviorForNonForceCache()
         => RunFailedCacheRecoveryTest(
             fingerprintAssets: false,
             failureMode: "empty",
             expectedStatusCode: 200,
-            expectedRequestCount: 1);
+            expectedRequestCount: 3);
 
     private async Task RunFailedCacheRecoveryTest(
         bool fingerprintAssets,
@@ -176,6 +179,33 @@ public class AssetCachingTests : BlazorWasmTestBase
                     Assert.True(log.WasFailureInjected);
                 });
                 Assert.False(counterLoaded.Task.IsCompleted);
+
+                if (fingerprintAssets)
+                {
+                    await requestLogClient.ClearRequestLogsAsync();
+                    counterLoaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    await page.ReloadAsync();
+                    await counterLoaded.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+                    requestLogs = await requestLogClient.GetRequestLogsAsync();
+                    clientAssemblyRequests = requestLogs
+                        .Where(log => string.Equals(log.Path, failedRequest.Path, StringComparison.Ordinal))
+                        .ToArray();
+                    Assert.NotEmpty(clientAssemblyRequests);
+                    Assert.All(clientAssemblyRequests, log =>
+                    {
+                        Assert.Equal(200, log.StatusCode);
+                        Assert.False(log.WasFailureInjected);
+                    });
+
+                    await requestLogClient.ClearRequestLogsAsync();
+                    counterLoaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    await page.ReloadAsync();
+                    await counterLoaded.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+                    requestLogs = await requestLogClient.GetRequestLogsAsync();
+                    Assert.DoesNotContain(requestLogs, log => string.Equals(log.Path, failedRequest.Path, StringComparison.Ordinal));
+                }
 
                 await page.EvaluateAsync("console.log('WASM EXIT 0');");
             }
