@@ -555,9 +555,6 @@ async function start_asset_download_sources (asset: AssetEntryInternal): Promise
             asset.pendingDownloadInternal = loadingResource;
             response = await loadingResource.response;
             if (!response || !response.ok) {
-                if (asset.cacheReloadAttempted) {
-                    break;
-                }
                 continue;// next source
             }
             return response;
@@ -569,9 +566,6 @@ async function start_asset_download_sources (asset: AssetEntryInternal): Promise
                     status: 0,
                     statusText: "" + err,
                 } as any;
-            }
-            if (asset.cacheReloadAttempted) {
-                break;
             }
             continue; //next source
         }
